@@ -97,9 +97,19 @@ DLLEXPORT int GET_NAME(tj3Compress, BITS_IN_JSAMPLE)
   if (!this->lossless && this->subsamp == TJSAMP_UNKNOWN)
     THROW("TJPARAM_SUBSAMP must be specified");
 
-  if (pitch == 0) pitch = width * tjPixelSize[pixelFormat];
-  else if (pitch < width * tjPixelSize[pixelFormat])
-    THROW("Invalid argument");
+  {
+    /* width * tjPixelSize[] can overflow int for huge (but caller-supplied)
+       widths.  Compute the minimum pitch in int64_t so that the comparison
+       and assignment below cannot invoke undefined behavior. */
+    int64_t minPitch = (int64_t)width * tjPixelSize[pixelFormat];
+
+    if (pitch == 0) {
+      if (minPitch > INT_MAX)
+        THROW("Image is too large");
+      pitch = (int)minPitch;
+    } else if ((int64_t)pitch < minPitch)
+      THROW("Invalid argument");
+  }
 
   if ((row_pointer = (_JSAMPROW *)malloc(sizeof(_JSAMPROW) * height)) == NULL)
     THROW("Memory allocation failure");
@@ -309,6 +319,7 @@ _JSAMPLE *GET_NAME(_tj3LoadImageFromFileHandle, BITS_IN_JSAMPLE)
 
   int retval = 0, tempc;
   size_t pitch;
+  unsigned long long rowBytes = 0;
   tjhandle handle2 = NULL;
   tjinstance *this2;
   j_compress_ptr cinfo = NULL;
@@ -398,17 +409,23 @@ _JSAMPLE *GET_NAME(_tj3LoadImageFromFileHandle, BITS_IN_JSAMPLE)
   *width = cinfo->image_width;  *height = cinfo->image_height;
   *pixelFormat = cs2pf[cinfo->in_color_space];
 
-  pitch = PAD((*width) * tjPixelSize[*pixelFormat], align);
+  {
+    /* Compute the pitch and total image size without invoking undefined
+       behavior: the multiplication of two ints in (*width) *
+       tjPixelSize[] can overflow for huge images, and the product of the
+       pitch, height, and sample size must be checked against SIZE_MAX on
+       all platforms (not just those where an unsigned long long is wider
+       than a size_t). */
+    unsigned long long totalBytes;
 
-  if (
-#if ULLONG_MAX > SIZE_MAX
-      (unsigned long long)pitch * (unsigned long long)(*height) *
-      (unsigned long long)sizeof(_JSAMPLE) >
-      (unsigned long long)((size_t)-1) ||
-#endif
-      (dstBuf = (_JSAMPLE *)malloc(pitch * (*height) *
-                                   sizeof(_JSAMPLE))) == NULL)
-    THROW("Memory allocation failure");
+    rowBytes = (unsigned long long)(*width) * tjPixelSize[*pixelFormat];
+    pitch = PAD(rowBytes, align);
+    totalBytes = pitch * (unsigned long long)(*height) * sizeof(_JSAMPLE);
+    if (totalBytes > (unsigned long long)((size_t)-1))
+      THROW("Memory allocation failure");
+    if ((dstBuf = (_JSAMPLE *)malloc((size_t)totalBytes)) == NULL)
+      THROW("Memory allocation failure");
+  }
 
   CATCH_LIBJPEG2();
 
@@ -423,7 +440,7 @@ _JSAMPLE *GET_NAME(_tj3LoadImageFromFileHandle, BITS_IN_JSAMPLE)
       if (invert) dstptr = &dstBuf[((*height) - row - 1) * pitch];
       else dstptr = &dstBuf[row * pitch];
       memcpy(dstptr, src->_buffer[i],
-             (*width) * tjPixelSize[*pixelFormat] * sizeof(_JSAMPLE));
+             (size_t)(rowBytes * sizeof(_JSAMPLE)));
     }
     cinfo->next_scanline += nlines;
   }

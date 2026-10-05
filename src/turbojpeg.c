@@ -989,8 +989,20 @@ DLLEXPORT size_t tj3JPEGBufSize(int width, int height, int jpegSubsamp)
   mcuw = tjMCUWidth[jpegSubsamp];
   mcuh = tjMCUHeight[jpegSubsamp];
   chromasf = jpegSubsamp == TJSAMP_GRAY ? 0 : 4 * 64 / (mcuw * mcuh);
-  retval = (unsigned long long)PAD(width, mcuw) * PAD(height, mcuh) *
-           (2ULL + chromasf) + 2048ULL;
+  {
+    /* Compute PAD() in unsigned long long.  Computing it in int (as the
+       arguments to PAD() are ints) overflows for dimensions close to
+       INT_MAX, which is undefined behavior in a pure function that performs
+       no dimension checks.  Also check for overflow of the multiplication
+       below, since the result can exceed an unsigned long long. */
+    unsigned long long w = PAD((unsigned long long)width, mcuw);
+    unsigned long long h = PAD((unsigned long long)height, mcuh);
+    unsigned long long pad = 2ULL + chromasf;
+
+    if (w > ULLONG_MAX / h || w * h > (ULLONG_MAX - 2048ULL) / pad)
+      THROWG("Image is too large", 0);
+    retval = w * h * pad + 2048ULL;
+  }
 #if ULLONG_MAX > ULONG_MAX
   if (retval > (unsigned long long)((unsigned long)-1))
     THROWG("Image is too large", 0);
@@ -1027,8 +1039,17 @@ DLLEXPORT unsigned long TJBUFSIZE(int width, int height)
   /* This allows for rare corner cases in which a JPEG image can actually be
      larger than the uncompressed input (we wouldn't mention it if it hadn't
      happened before.) */
-  retval = (unsigned long long)PAD(width, 16) * PAD(height, 16) * 6ULL +
-           2048ULL;
+  {
+    /* PAD() must be computed in unsigned long long, because computing it in
+       int overflows for dimensions close to INT_MAX (undefined behavior),
+       and the multiplication below must be checked for overflow. */
+    unsigned long long w = PAD((unsigned long long)width, 16);
+    unsigned long long h = PAD((unsigned long long)height, 16);
+
+    if (w > ULLONG_MAX / h || w * h > (ULLONG_MAX - 2048ULL) / 6ULL)
+      THROWG("Image is too large", (unsigned long)-1);
+    retval = w * h * 6ULL + 2048ULL;
+  }
 #if ULLONG_MAX > ULONG_MAX
   if (retval > (unsigned long long)((unsigned long)-1))
     THROWG("Image is too large", (unsigned long)-1);
@@ -1611,9 +1632,19 @@ DLLEXPORT int tj3EncodeYUVPlanes8(tjhandle handle, const unsigned char *srcBuf,
   if (pixelFormat == TJPF_CMYK)
     THROW("Cannot generate YUV images from packed-pixel CMYK images");
 
-  if (pitch == 0) pitch = width * tjPixelSize[pixelFormat];
-  else if (pitch < width * tjPixelSize[pixelFormat])
-    THROW("Invalid argument");
+  {
+    /* width * tjPixelSize[] can overflow int for huge (but caller-supplied)
+       widths.  Compute the minimum pitch in int64_t so that the comparison
+       and assignment below cannot invoke undefined behavior. */
+    int64_t minPitch = (int64_t)width * tjPixelSize[pixelFormat];
+
+    if (pitch == 0) {
+      if (minPitch > INT_MAX)
+        THROW("Image is too large");
+      pitch = (int)minPitch;
+    } else if ((int64_t)pitch < minPitch)
+      THROW("Invalid argument");
+  }
 
   CATCH_LIBJPEG(this);
 
@@ -2653,9 +2684,19 @@ DLLEXPORT int tj3DecodeYUVPlanes8(tjhandle handle,
   if (pixelFormat == TJPF_CMYK)
     THROW("Cannot decode YUV images into packed-pixel CMYK images.");
 
-  if (pitch == 0) pitch = width * tjPixelSize[pixelFormat];
-  else if (pitch < width * tjPixelSize[pixelFormat])
-    THROW("Invalid argument");
+  {
+    /* width * tjPixelSize[] can overflow int for huge (but caller-supplied)
+       widths.  Compute the minimum pitch in int64_t so that the comparison
+       and assignment below cannot invoke undefined behavior. */
+    int64_t minPitch = (int64_t)width * tjPixelSize[pixelFormat];
+
+    if (pitch == 0) {
+      if (minPitch > INT_MAX)
+        THROW("Image is too large");
+      pitch = (int)minPitch;
+    } else if ((int64_t)pitch < minPitch)
+      THROW("Invalid argument");
+  }
   dinfo->image_width = width;
   dinfo->image_height = height;
 

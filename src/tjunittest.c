@@ -827,6 +827,39 @@ static void overflowTest(void)
   intsize = tj3YUVPlaneHeight(0, INT_MAX, TJSAMP_420);
   CHECKSIZEINT(tj3YUVPlaneHeight());
 
+  /* Extreme dimensions must not overflow the (signed) PAD() arithmetic or
+     the unsigned long long multiplication in the buffer size functions.
+     These must be detected and reported as errors. */
+  size = tj3JPEGBufSize(INT_MAX, INT_MAX, TJSAMP_444);
+  if (size != 0 || !strcmp(tj3GetErrorStr(NULL), "No error"))
+    THROW("tj3JPEGBufSize() overflow");
+  ulsize = TJBUFSIZE(INT_MAX, INT_MAX);
+  if (ulsize != (unsigned long)(-1) ||
+      !strcmp(tj3GetErrorStr(NULL), "No error"))
+    THROW("TJBUFSIZE() overflow");
+
+  /* The packed-pixel pitch computation (width * tjPixelSize[]) is performed
+     in int and must not overflow for huge caller-supplied widths.  Such
+     widths are rejected by the compressor before any buffer is touched. */
+  {
+    tjhandle handle;
+    unsigned char *dstBuf = NULL;
+    unsigned char srcBuf[4] = { 0 };
+    size_t dstSize = 0;
+
+    if ((handle = tj3Init(TJINIT_COMPRESS)) == NULL)
+      THROW_TJ(handle);
+    TRY_TJ(handle, tj3Set(handle, TJPARAM_QUALITY, 75));
+    TRY_TJ(handle, tj3Set(handle, TJPARAM_SUBSAMP, TJSAMP_444));
+    if (tj3Compress8(handle, srcBuf, 1200000000, 0, 1, TJPF_RGB, &dstBuf,
+                     &dstSize) != -1 ||
+        !strstr(tj3GetErrorStr(handle), "too large")) {
+      tj3Destroy(handle);
+      THROW("tj3Compress8() pitch overflow");
+    }
+    tj3Destroy(handle);
+  }
+
 bailout:
   return;
 }
